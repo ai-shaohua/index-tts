@@ -33,6 +33,7 @@ dependencies = [
   "cython==3.0.7",
   "descript-audiotools==0.7.2",
   "einops>=0.8.1",
+  "fastapi>=0.116.2",
   "ffmpeg-python==0.2.0",
   "g2p-en==2.1.0",
   "jieba==0.42.1",
@@ -56,8 +57,8 @@ dependencies = [
   "torchaudio==2.8.*",
   "tqdm>=4.67.1",
   "transformers==4.52.1",
-
   # Use "wetext" on Windows/Mac, otherwise "WeTextProcessing" on Linux.
+  "uvicorn>=0.35.0",
   "wetext>=0.0.9; sys_platform != 'linux'",
   "WeTextProcessing; sys_platform == 'linux'",
 ]
