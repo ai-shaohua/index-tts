@@ -10,7 +10,6 @@ dataset:
         n_mels: 100
         mel_fmin: 0
         normalize: false
-
 gpt:
     model_dim: 1280
     max_mel_tokens: 1815
@@ -19,7 +18,7 @@ gpt:
     use_mel_codes_as_input: true
     mel_length_compression: 1024
     layers: 24
-    number_text_tokens: 12000
+    number_text_tokens: 60509
     number_mel_codes: 8194
     start_mel_token: 8192
     stop_mel_token: 8193
@@ -41,7 +40,6 @@ gpt:
         num_blocks: 4
         input_layer: "conv2d2"
         perceiver_mult: 2
-
 semantic_codec:
     codebook_size: 8192
     hidden_size: 1024
@@ -49,7 +47,6 @@ semantic_codec:
     vocos_dim: 384
     vocos_intermediate_dim: 2048
     vocos_num_layers: 12
-
 s2mel:
     preprocess_params:
         sr: 22050
@@ -60,7 +57,6 @@ s2mel:
             n_mels: 80
             fmin: 0
             fmax: "None"
-
     dit_type: "DiT"
     reg_loss_type: "l1"
     style_encoder:
@@ -106,15 +102,14 @@ s2mel:
         dilation_rate: 1
         p_dropout: 0.2
         style_condition: true
-
 gpt_checkpoint: gpt.pth
 w2v_stat: wav2vec2bert_stats.pt
 s2mel_checkpoint: s2mel.pth
-emo_matrix: feat2.pt 
+emo_matrix: feat2.pt
 spk_matrix: feat1.pt
 emo_num: [3, 17, 2, 8, 4, 5, 10, 24]
-qwen_emo_path: qwen0.6bemo4-merge/ 
+qwen_emo_path: qwen0.6bemo4-merge/
 vocoder:
     type: "bigvgan"
-    name: "nvidia/bigvgan_v2_22khz_80band_256x"
-version: 2.0
+    name: "bigvgan_generator.pt"
+version: 2.5
