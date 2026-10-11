@@ -63,6 +63,9 @@ dependencies = [
   "openai-whisper>=20231117",
   "fugashi[unidic-lite]",
 
+  # Apple Silicon MLX backend for server.py. Ignored on Linux and Intel Macs.
+  "index-tts-2.5-mlx==0.1.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+
   # Use "wetext" on Windows/Mac, otherwise "WeTextProcessing" on Linux.
   "uvicorn>=0.35.0",
   "wetext>=0.0.9; sys_platform != 'linux'",

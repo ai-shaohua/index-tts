@@ -835,6 +835,27 @@ wheels = [
 ]
 
 [[package]]
+name = "index-tts-2-5-mlx"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub", marker = "sys_platform == 'darwin'" },
+    { name = "kaldi-native-fbank", marker = "sys_platform == 'darwin'" },
+    { name = "librosa", marker = "sys_platform == 'darwin'" },
+    { name = "mlx", marker = "sys_platform == 'darwin'" },
+    { name = "numpy", marker = "sys_platform == 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin'" },
+    { name = "soundfile", marker = "sys_platform == 'darwin'" },
+    { name = "tiktoken", marker = "sys_platform == 'darwin'" },
+    { name = "transformers", marker = "sys_platform == 'darwin'" },
+    { name = "wetext", marker = "sys_platform == 'darwin'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/63/e4/3ff66779d8e03c253282b49b1ca46c312097eb4594c811556162e0502a74/index_tts_2_5_mlx-0.1.1.tar.gz", hash = "sha256:b313220381d549df07763428af0329d77b28377c8e139c3bec187a73bc46f935", size = 41951, upload-time = "2026-08-14T09:14:08.358Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/bb/4aa0a1cfa4906058ebf832974b89f809bd110c57de0acca2495da1c14863/index_tts_2_5_mlx-0.1.1-py3-none-any.whl", hash = "sha256:a304d3306c321f4b6c82534b7f0f8450984d40052b2e231933c9eb78c38c2993", size = 53806, upload-time = "2026-08-14T09:14:07.273Z" },
+]
+
+[[package]]
 name = "indextts"
 version = "2.0.0"
 source = { editable = "." }
@@ -848,6 +869,7 @@ dependencies = [
     { name = "ffmpeg-python" },
     { name = "fugashi", extra = ["unidic-lite"] },
     { name = "g2p-en" },
+    { name = "index-tts-2-5-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "jieba" },
     { name = "json5" },
     { name = "keras" },
@@ -914,6 +936,7 @@ requires-dist = [
     { name = "fugashi", extras = ["unidic-lite"] },
     { name = "g2p-en", specifier = "==2.1.0" },
     { name = "gradio", marker = "extra == 'webui'", specifier = "==5.45.0" },
+    { name = "index-tts-2-5-mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'", specifier = "==0.1.1" },
     { name = "jieba", specifier = "==0.42.1" },
     { name = "json5", specifier = "==0.10.0" },
     { name = "keras", specifier = "==2.9.0" },
@@ -1098,6 +1121,16 @@ dependencies = [
     { name = "torch", version = "2.8.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a1/19/c9e1596b5572c786b93428d0904280e964c930fae7e6c9368ed9e1b63922/julius-0.2.7.tar.gz", hash = "sha256:3c0f5f5306d7d6016fcc95196b274cae6f07e2c9596eed314e4e7641554fbb08", size = 59640, upload-time = "2022-09-19T16:13:34.2Z" }
+
+[[package]]
+name = "kaldi-native-fbank"
+version = "1.22.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3a/2c/84076b352107ce12d56f28c313f1aca1be332d953dd96aec7b84976e6d53/kaldi-native-fbank-1.22.3.tar.gz", hash = "sha256:387bf87225c6b83c93ae652eeaef1b4d531994b6e398e7a77189de340674f9af", size = 71013, upload-time = "2025-10-09T02:31:21.487Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/d5/be771230ba2f071ad036a9224139fa4e0ac576b8abac15209342fc63ef86/kaldi_native_fbank-1.22.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:947cb8fae3611244b15006bd42263fe56afe583077e7006aac4bdb0e10dc5a4f", size = 227900, upload-time = "2025-10-09T02:33:05.679Z" },
+    { url = "https://files.pythonhosted.org/packages/64/2b/3132083b930fa6411f14469f36c465b7d2fba29a8a3e121d8fd6baffc8ea/kaldi_native_fbank-1.22.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:29452f2900e771086e9022dde17a92d191217ab3e34ca7dc361bd9be53e94fb4", size = 229180, upload-time = "2025-10-09T02:29:35.356Z" },
+]
 
 [[package]]
 name = "kaldifst"
@@ -1334,6 +1367,32 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "mlx"
+version = "0.32.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mlx-metal", marker = "sys_platform == 'darwin'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/6d/369081cd86b32237910837ec2e8ed97c9c468f5e10798b28ee273301cc4b/mlx-0.32.3-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:0512049c81fded99aa6af2d039ae1fccf113ff1a5f2df937a596578aabd46869", size = 655804, upload-time = "2026-09-29T00:14:41.597Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/91/d68f66bb29e8de96d255b784a105d8a2fc26f6e844b7920ff19ded517c4d/mlx-0.32.3-cp310-cp310-macosx_15_0_arm64.whl", hash = "sha256:b57996fd2b72207a796656bc39508f20089692815297120039284edb296b5fff", size = 655802, upload-time = "2026-09-29T00:14:43.321Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/72/8056c38934512ba9dcc63c0f1df5bdc67a27881e205fb51730fdc8832b17/mlx-0.32.3-cp310-cp310-macosx_26_0_arm64.whl", hash = "sha256:b14744a1b3a9dd48e06a62c448710a798ceda9451d7d37a4654a58b5adfa97f8", size = 655957, upload-time = "2026-09-29T00:14:45.001Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/ed/7ced6107f0eb4959659e2a3bed2e402b70eb117d3c8941d4c9b21e9c3ca8/mlx-0.32.3-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:8439baa207db769df1df82a722b0ee0c2362f75c23c0740b7472c3d279253bae", size = 655739, upload-time = "2026-09-29T00:14:51.18Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/98/44ed08071e8ab99800d01ba7d6683a1f565233bae000d68aa7fe3a9ff11f/mlx-0.32.3-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:d9ff05b868748b846a02f59913e9aa9d7b576827db92cc358ec1cf660f7f90a5", size = 655739, upload-time = "2026-09-29T00:14:52.703Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/26/893e65bed5616901b7e8554ddf278bfe81037e1efa67736a7ea0f6924891/mlx-0.32.3-cp311-cp311-macosx_26_0_arm64.whl", hash = "sha256:4e1a8fa78461c6cf1f9473e3bc8a3c4e362f1aaa613b435787f2844fad522bc7", size = 655786, upload-time = "2026-09-29T00:14:54.266Z" },
+]
+
+[[package]]
+name = "mlx-metal"
+version = "0.32.3"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/ed/8510985bcb24a6eae359a5441ce4cedcee13b84258a010cd0e515e9fb0bc/mlx_metal-0.32.3-py3-none-macosx_14_0_arm64.whl", hash = "sha256:fdba88ed9131448cf163be2c7ad6374746d8818205f28657aa91b6c69050f691", size = 42205858, upload-time = "2026-09-29T00:14:27.819Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/dc/4f852295fbe357bb9d3a2bfd55361a520b94ded873b72dc58b34a7f507cd/mlx_metal-0.32.3-py3-none-macosx_15_0_arm64.whl", hash = "sha256:feea99fe4d01f9e9f33ca73d869f988219a1725de1c18870baa7d5cd5aef6cb3", size = 42187333, upload-time = "2026-09-29T00:14:33.861Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/38/cb985ca86979ca6f954a2a45eb6e3f9b787c5d55227564a04f87953b3d56/mlx_metal-0.32.3-py3-none-macosx_26_0_arm64.whl", hash = "sha256:34ae9b83ad2f0ccdd3e5d48ec35176e7119f57069eef187122916dc941a4ae1f", size = 67661845, upload-time = "2026-09-29T00:14:41.248Z" },
 ]
 
 [[package]]

@@ -34,9 +34,11 @@ parser.add_argument("--accel", action="store_true", default=False, help="Use GPT
 parser.add_argument("--torch_compile", action="store_true", default=False, help="Use torch.compile to optimize s2mel if available")
 parser.add_argument("--qwen_emo", action="store_true", default=False, help="Load QwenEmotion even on a low-VRAM GPU, where it is skipped by default")
 parser.add_argument("--mp3_bitrate", type=str, default="128k")
-parser.add_argument("--mlx", action="store_true", default=False, help="v2.5 only: serve with index-tts-2.5-mlx on Apple Silicon. Does not change webui.py.")
+parser.add_argument("--mlx", action=argparse.BooleanOptionalAction, default=None, help="v2.5: serve with index-tts-2.5-mlx. On by default for v2.5; pass --no-mlx for the PyTorch backend. Does not change webui.py.")
 cmd_args, _ = parser.parse_known_args()
 
+if cmd_args.mlx is None:
+    cmd_args.mlx = cmd_args.version == "2.5"
 if cmd_args.mlx and cmd_args.version != "2.5":
     parser.error("--mlx requires --version 2.5")
 
