@@ -34,8 +34,6 @@ parser.add_argument("--accel", action="store_true", default=False, help="Use GPT
 parser.add_argument("--torch_compile", action="store_true", default=False, help="Use torch.compile to optimize s2mel if available")
 parser.add_argument("--qwen_emo", action="store_true", default=False, help="Load QwenEmotion even on a low-VRAM GPU, where it is skipped by default")
 parser.add_argument("--mp3_bitrate", type=str, default="128k")
-parser.add_argument("--no-warmup", action="store_true", default=False,
-                    help="skip startup warmup inference (useful on CUDA where warmup is less needed)")
 cmd_args, _ = parser.parse_known_args()
 
 
@@ -156,38 +154,6 @@ def build_tts(use_accel=False, use_torch_compile=False):
 
 print(f">> loading IndexTTS {cmd_args.version} model...")
 tts = build_tts(use_accel=cmd_args.accel, use_torch_compile=cmd_args.torch_compile)
-
-
-# Warm up before serving: the first inference pays one-time device costs
-# (e.g. Metal/MPS shader compilation on macOS), so we absorb it at startup
-# instead of letting the first /tts request stall.
-def warmup():
-    warmup_wavs = sorted(
-        f for f in os.listdir(cmd_args.examples_dir) if f.endswith(".wav")
-    ) if os.path.isdir(cmd_args.examples_dir) else []
-    if not warmup_wavs:
-        print(">> no warmup voice prompt found in examples/, skipping warmup")
-        return
-    warmup_wav = os.path.join(cmd_args.examples_dir, warmup_wavs[0])
-    print(f">> warming up inference with {warmup_wav} ...")
-    start = time.perf_counter()
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        warmup_out = tmp.name
-    try:
-        infer_kwargs = {"num_beams": 1}
-        if IS_V25:
-            infer_kwargs["lang"] = "ZH"
-        tts.infer(warmup_wav, "你好，这是一次预热推理。", warmup_out, **infer_kwargs)
-    finally:
-        try:
-            os.remove(warmup_out)
-        except OSError:
-            pass
-    print(f">> warmup done in {time.perf_counter() - start:.2f}s")
-
-
-if not cmd_args.no_warmup:
-    warmup()
 
 # inference is not thread-safe — serialize calls
 infer_lock = asyncio.Lock()
