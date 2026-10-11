@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 from indextts.BigVGAN.models import BigVGAN as Generator
 from indextts.gpt.model import UnifiedVoice
 from indextts.utils.checkpoint import load_checkpoint
+from indextts.utils.common import fade_out_tail, save_pcm_wav
 from indextts.utils.feature_extractors import MelSpectrogramFeatures
 
 from indextts.utils.front import TextNormalizer, TextTokenizer
@@ -489,6 +490,9 @@ class IndexTTS:
         # wav audio output
         self._set_gr_progress(0.9, "saving audio...")
         wav = torch.cat(wavs, dim=1)
+        # 停止符采样偏早时，末尾可能停在话音中间
+        # (index-tts/index-tts#247, #488, #523, #633)，详见 fade_out_tail()。
+        wav = fade_out_tail(wav, sampling_rate)
         wav_length = wav.shape[-1] / sampling_rate
         print(f">> Reference audio length: {cond_mel_frame * 256 / sampling_rate:.2f} seconds")
         print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
@@ -506,7 +510,7 @@ class IndexTTS:
         if output_path:
             # 直接保存音频到指定路径中
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            torchaudio.save(output_path, wav.type(torch.int16), sampling_rate)
+            save_pcm_wav(output_path, wav, sampling_rate)
             print(">> wav file saved to:", output_path)
             return output_path
         else:
@@ -655,6 +659,9 @@ class IndexTTS:
         end_time = time.perf_counter()
         self._set_gr_progress(0.9, "saving audio...")
         wav = torch.cat(wavs, dim=1)
+        # 停止符采样偏早时，末尾可能停在话音中间
+        # (index-tts/index-tts#247, #488, #523, #633)，详见 fade_out_tail()。
+        wav = fade_out_tail(wav, sampling_rate)
         wav_length = wav.shape[-1] / sampling_rate
         print(f">> Reference audio length: {cond_mel_frame * 256 / sampling_rate:.2f} seconds")
         print(f">> gpt_gen_time: {gpt_gen_time:.2f} seconds")
@@ -673,7 +680,7 @@ class IndexTTS:
                 print(">> remove old wav file:", output_path)
             if os.path.dirname(output_path) != "":
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            torchaudio.save(output_path, wav.type(torch.int16), sampling_rate)
+            save_pcm_wav(output_path, wav, sampling_rate)
             print(">> wav file saved to:", output_path)
             return output_path
         else:
