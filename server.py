@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -19,37 +20,174 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from indextts.infer_v2 import IndexTTS2
-
 
 parser = argparse.ArgumentParser(description="IndexTTS FastAPI Server")
 parser.add_argument("--host", type=str, default="0.0.0.0")
 parser.add_argument("--port", type=int, default=3002)
 parser.add_argument("--model_dir", type=str, default="./checkpoints")
+parser.add_argument("--version", type=str, default="2.5", choices=["2", "2.5"], help="Model version to use")
 parser.add_argument("--examples_dir", type=str, default="./examples")
-parser.add_argument("--fp16", action="store_true", default=False)
+parser.add_argument("--fp16", action="store_true", default=False, help="Use half precision for inference if available (FP16 on v2, BF16 on v2.5)")
 parser.add_argument("--deepspeed", action="store_true", default=False)
 parser.add_argument("--cuda_kernel", action="store_true", default=False)
+parser.add_argument("--accel", action="store_true", default=False, help="Use GPT2 acceleration engine if available")
+parser.add_argument("--torch_compile", action="store_true", default=False, help="Use torch.compile to optimize s2mel if available")
+parser.add_argument("--qwen_emo", action="store_true", default=False, help="Load QwenEmotion even on a low-VRAM GPU, where it is skipped by default")
 parser.add_argument("--mp3_bitrate", type=str, default="128k")
+parser.add_argument("--no-warmup", action="store_true", default=False,
+                    help="skip startup warmup inference (useful on CUDA where warmup is less needed)")
 cmd_args, _ = parser.parse_known_args()
 
-if not os.path.exists(cmd_args.model_dir):
-    print(f"Model directory {cmd_args.model_dir} does not exist.")
+
+# Validate optional acceleration dependencies early, so missing extras fail
+# at startup instead of halfway through inference.
+def _require_optional_extra(flag_name, module_name, install_cmd):
+    try:
+        __import__(module_name)
+    except ImportError:
+        parser.error(
+            f"--{flag_name} requires {module_name}, which is not installed. "
+            f"Install it with: {install_cmd}"
+        )
+
+
+if cmd_args.accel:
+    _require_optional_extra("accel", "flash_attn", "uv sync --extra accel")
+
+if cmd_args.torch_compile:
+    _require_optional_extra("torch_compile", "triton", "uv sync --extra torch_compile")
+
+REQUIRED_FILES = {
+    "2": ["bpe.model", "gpt.pth", "s2mel.pth", "wav2vec2bert_stats.pt"],
+    "2.5": [
+        "gpt.pth",
+        "s2mel.pth",
+        "codec.pth",
+        "multilingual_zh_ja_yue_char_del.tiktoken",
+        "wav2vec2bert_stats.pt",
+    ],
+}
+MODEL_REPO = {
+    "2": "IndexTeam/IndexTTS-2",
+    "2.5": "IndexTeam/IndexTTS-2.5",
+}
+required_files = REQUIRED_FILES[cmd_args.version]
+missing = [f for f in required_files if not os.path.exists(os.path.join(cmd_args.model_dir, f))]
+if missing:
+    print(
+        f"Model directory {cmd_args.model_dir} is incomplete for v{cmd_args.version} "
+        f"(missing: {', '.join(missing)}). Downloading {MODEL_REPO[cmd_args.version]}..."
+    )
+    from indextts.utils.model_download import snapshot_download
+    try:
+        snapshot_download(MODEL_REPO[cmd_args.version], local_dir=cmd_args.model_dir)
+    except Exception as e:
+        print(f"Failed to download model to {cmd_args.model_dir}: {e}")
+        sys.exit(1)
+    missing = [f for f in required_files if not os.path.exists(os.path.join(cmd_args.model_dir, f))]
+    if missing:
+        print(f"Failed to download model to {cmd_args.model_dir} (still missing: {', '.join(missing)}). Please download it manually.")
+        sys.exit(1)
+    print("Model downloaded successfully.")
+
+from indextts.utils.model_download import ensure_config_available
+try:
+    ensure_config_available(cmd_args.model_dir, version=cmd_args.version)
+except Exception as e:
+    print(f"Failed to download config.yaml: {e}")
     sys.exit(1)
 
-for f in ["bpe.model", "gpt.pth", "config.yaml", "s2mel.pth", "wav2vec2bert_stats.pt"]:
-    if not os.path.exists(os.path.join(cmd_args.model_dir, f)):
-        print(f"Required file {f} missing in {cmd_args.model_dir}")
-        sys.exit(1)
+IS_V25 = cmd_args.version == "2.5"
 
-print(">> loading IndexTTS2 model...")
-tts = IndexTTS2(
-    model_dir=cmd_args.model_dir,
-    cfg_path=os.path.join(cmd_args.model_dir, "config.yaml"),
-    use_fp16=cmd_args.fp16,
-    use_deepspeed=cmd_args.deepspeed,
-    use_cuda_kernel=cmd_args.cuda_kernel,
-)
+if IS_V25:
+    from indextts.infer_v2_5 import IndexTTS2
+else:
+    from indextts.infer_v2 import IndexTTS2
+
+LOW_VRAM_THRESHOLD_GB = 10.0
+
+
+def detect_vram_gb():
+    import torch
+
+    if not torch.cuda.is_available():
+        return None
+    return torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+
+
+_vram_gb = detect_vram_gb()
+LOW_VRAM = _vram_gb is not None and _vram_gb < LOW_VRAM_THRESHOLD_GB
+
+HALF_PRECISION = cmd_args.fp16 or LOW_VRAM
+LOAD_QWEN_EMO = cmd_args.qwen_emo or not LOW_VRAM
+
+if LOW_VRAM:
+    print(
+        f">> {_vram_gb:.1f} GB VRAM detected (< {LOW_VRAM_THRESHOLD_GB:.0f} GB): "
+        "enabling half precision"
+        + ("" if LOAD_QWEN_EMO else " and skipping QwenEmotion")
+    )
+    if not LOAD_QWEN_EMO:
+        print(">> Emotion control from a text description is unavailable; pass --qwen_emo to force it.")
+
+
+def build_tts(use_accel=False, use_torch_compile=False):
+    """Build an IndexTTS2 instance with the requested acceleration options."""
+    import torch
+
+    kwargs = dict(
+        model_dir=cmd_args.model_dir,
+        cfg_path=os.path.join(cmd_args.model_dir, "config.yaml"),
+        use_deepspeed=cmd_args.deepspeed,
+        use_cuda_kernel=cmd_args.cuda_kernel,
+        use_accel=use_accel,
+        use_torch_compile=use_torch_compile,
+        use_qwen_emo=LOAD_QWEN_EMO,
+    )
+    if IS_V25:
+        use_bf16 = HALF_PRECISION and torch.cuda.is_bf16_supported()
+        if HALF_PRECISION and not use_bf16:
+            print(">> BF16 is not supported on this device, falling back to full precision.")
+        kwargs["use_bf16"] = use_bf16
+    else:
+        kwargs["use_fp16"] = HALF_PRECISION
+    return IndexTTS2(**kwargs)
+
+
+print(f">> loading IndexTTS {cmd_args.version} model...")
+tts = build_tts(use_accel=cmd_args.accel, use_torch_compile=cmd_args.torch_compile)
+
+
+# Warm up before serving: the first inference pays one-time device costs
+# (e.g. Metal/MPS shader compilation on macOS), so we absorb it at startup
+# instead of letting the first /tts request stall.
+def warmup():
+    warmup_wavs = sorted(
+        f for f in os.listdir(cmd_args.examples_dir) if f.endswith(".wav")
+    ) if os.path.isdir(cmd_args.examples_dir) else []
+    if not warmup_wavs:
+        print(">> no warmup voice prompt found in examples/, skipping warmup")
+        return
+    warmup_wav = os.path.join(cmd_args.examples_dir, warmup_wavs[0])
+    print(f">> warming up inference with {warmup_wav} ...")
+    start = time.perf_counter()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        warmup_out = tmp.name
+    try:
+        infer_kwargs = {"num_beams": 1}
+        if IS_V25:
+            infer_kwargs["lang"] = "ZH"
+        tts.infer(warmup_wav, "你好，这是一次预热推理。", warmup_out, **infer_kwargs)
+    finally:
+        try:
+            os.remove(warmup_out)
+        except OSError:
+            pass
+    print(f">> warmup done in {time.perf_counter() - start:.2f}s")
+
+
+if not cmd_args.no_warmup:
+    warmup()
 
 # inference is not thread-safe — serialize calls
 infer_lock = asyncio.Lock()
@@ -63,10 +201,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# v2.5 supported languages (same choices as webui.py)
+LANGUAGES_V25 = ["ZH", "EN", "JA", "AR", "ES"]
+
 
 class TTSRequest(BaseModel):
     agentName: str = Field(..., description="Voice prompt name; resolves to examples/{agentName}.wav")
     text: str = Field(..., min_length=1)
+    lang: str = Field(default="ZH", description=f"Text language, one of {LANGUAGES_V25} (IndexTTS 2.5 only)")
+    duration_factor: float = Field(default=1.0, description="Speech duration factor (IndexTTS 2.5 only)")
+    # Beam search dominates latency on MPS. 1 is sampling (fast); 3 matches the WebUI quality default.
+    num_beams: int = Field(default=1, ge=1, le=10)
 
 
 def wav_to_mp3(wav_path: str, bitrate: str) -> bytes:
@@ -87,7 +232,11 @@ def wav_to_mp3(wav_path: str, bitrate: str) -> bytes:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model_version": tts.model_version or "1.0"}
+    return {
+        "status": "ok",
+        "version": cmd_args.version,
+        "model_version": tts.model_version or "1.0",
+    }
 
 
 @app.post("/tts")
@@ -96,9 +245,18 @@ async def synthesize(req: TTSRequest):
     if not os.path.isfile(prompt_path):
         raise HTTPException(status_code=404, detail=f"voice prompt not found: {prompt_path}")
 
+    infer_kwargs = {"num_beams": req.num_beams}
+    if IS_V25:
+        lang = (req.lang or "ZH").upper()
+        if lang not in LANGUAGES_V25:
+            raise HTTPException(status_code=400, detail=f"unsupported lang: {req.lang} (choose from {LANGUAGES_V25})")
+        infer_kwargs["lang"] = lang
+        infer_kwargs["duration_factor"] = float(req.duration_factor)
+
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
         wav_path = tmp.name
 
+    started = time.perf_counter()
     try:
         async with infer_lock:
             await asyncio.to_thread(
@@ -106,7 +264,12 @@ async def synthesize(req: TTSRequest):
                 prompt_path,
                 req.text,
                 wav_path,
+                **infer_kwargs,
             )
+        print(
+            f">> /tts agent={req.agentName} chars={len(req.text)} "
+            f"num_beams={req.num_beams} {time.perf_counter() - started:.2f}s"
+        )
 
         if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
             raise HTTPException(status_code=500, detail="synthesis produced no audio")
