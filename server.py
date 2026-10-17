@@ -44,7 +44,7 @@ parser.add_argument("--host", type=str, default="0.0.0.0")
 parser.add_argument("--port", type=int, default=3002)
 parser.add_argument("--model_dir", type=str, default="./checkpoints")
 parser.add_argument("--version", type=str, default="2.5", choices=["2", "2.5"], help="Model version to use")
-parser.add_argument("--examples_dir", type=str, default="./examples")
+parser.add_argument("--examples_dir", type=str, default="./wolf-audio")
 parser.add_argument("--fp16", action="store_true", default=False, help="Use half precision for inference if available (FP16 on v2, BF16 on v2.5)")
 parser.add_argument("--deepspeed", action="store_true", default=False)
 parser.add_argument("--cuda_kernel", action="store_true", default=False)
@@ -245,7 +245,7 @@ LANGUAGES_V25 = ["ZH", "EN", "JA", "AR", "ES"]
 
 
 class TTSRequest(BaseModel):
-    agentName: str = Field(..., description="Voice prompt name; resolves to examples/{agentName}.wav")
+    agentName: str = Field(..., description="Voice prompt name; resolves to wolf-audio/{agentName}.wav")
     text: str = Field(..., min_length=1)
     lang: str = Field(default="ZH", description=f"Text language, one of {LANGUAGES_V25} (IndexTTS 2.5 only)")
     duration_factor: float = Field(default=1.0, description="Speech duration factor (IndexTTS 2.5 only)")
