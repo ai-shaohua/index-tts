@@ -34,6 +34,7 @@ parser.add_argument("--accel", action="store_true", default=False, help="Use GPT
 parser.add_argument("--torch_compile", action="store_true", default=False, help="Use torch.compile to optimize s2mel if available")
 parser.add_argument("--qwen_emo", action="store_true", default=False, help="Load QwenEmotion even on a low-VRAM GPU, where it is skipped by default")
 parser.add_argument("--mp3_bitrate", type=str, default="128k")
+parser.add_argument("--n_timesteps", type=int, default=10, help="MLX: CFM solver steps per segment (upstream default 25; 10 is ~2.5x faster with little audible loss)")
 parser.add_argument("--mlx", action=argparse.BooleanOptionalAction, default=None, help="v2.5: serve with index-tts-2.5-mlx. On by default for v2.5; pass --no-mlx for the PyTorch backend. Does not change webui.py.")
 cmd_args, _ = parser.parse_known_args()
 
@@ -63,6 +64,7 @@ if cmd_args.torch_compile:
 
 IS_V25 = cmd_args.version == "2.5"
 USE_MLX = cmd_args.mlx
+DEFAULT_N_TIMESTEPS = cmd_args.n_timesteps
 
 if not USE_MLX:
     REQUIRED_FILES = {
@@ -180,14 +182,33 @@ else:
             _mlx_speakers[key] = spk
         return spk
 
-    def _synthesize_mlx(prompt_path, text, wav_path, lang, duration_factor):
+    def _synthesize_mlx(prompt_path, text, wav_path, lang, duration_factor,
+                        n_timesteps, max_text_tokens_per_segment):
+        t0 = time.perf_counter()
+        spk = mlx_speaker(prompt_path)
+        t_spk = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         pcm = tts.synthesize(
             text,
             lang=lang,
-            spk=mlx_speaker(prompt_path),
+            spk=spk,
             duration_factor=duration_factor,
+            n_timesteps=n_timesteps,
+            max_text_tokens_per_segment=max_text_tokens_per_segment,
         )
+        t_syn = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         tts.write_wav(wav_path, pcm)
+        timings = dict(getattr(tts._pipe, "last_timings", {}))
+        timings["spk"] = t_spk
+        timings["wav"] = time.perf_counter() - t0
+        # Whatever synthesize() spent outside the stages it reports (text
+        # frontend, numpy concat, MLX graph sync).
+        timings["other"] = t_syn - sum(
+            v for k, v in timings.items() if k not in ("spk", "wav"))
+        return timings
 
 # inference is not thread-safe — serialize calls
 infer_lock = asyncio.Lock()
@@ -212,6 +233,12 @@ class TTSRequest(BaseModel):
     duration_factor: float = Field(default=1.0, description="Speech duration factor (IndexTTS 2.5 only)")
     # Beam search dominates latency on MPS. 1 is sampling (fast); 3 matches the WebUI quality default.
     num_beams: int = Field(default=1, ge=1, le=10)
+    # MLX only. CFM solver steps: each step is one DiT call, so latency is
+    # linear in this. 25 is the upstream default; 10 is near-indistinguishable.
+    n_timesteps: int = Field(default=DEFAULT_N_TIMESTEPS, ge=1, le=50)
+    # MLX only. Text is split into segments; each segment is a separate
+    # GPT+CFM+vocoder pass, so smaller segments mean more total work.
+    max_text_tokens_per_segment: int = Field(default=120, ge=20, le=400)
 
 
 def wav_to_mp3(wav_path: str, bitrate: str) -> bytes:
@@ -276,14 +303,17 @@ async def synthesize(req: TTSRequest):
             if USE_MLX:
                 # MLX streams are thread-local. The model was loaded on this
                 # thread; a worker thread raises "no Stream(cpu, 1)".
-                _synthesize_mlx(
+                timings = _synthesize_mlx(
                     prompt_path,
                     req.text,
                     wav_path,
                     mlx_lang,
                     float(req.duration_factor),
+                    req.n_timesteps,
+                    req.max_text_tokens_per_segment,
                 )
             else:
+                timings = None
                 await asyncio.to_thread(
                     tts.infer,
                     prompt_path,
@@ -291,15 +321,21 @@ async def synthesize(req: TTSRequest):
                     wav_path,
                     **infer_kwargs,
                 )
-        print(
-            f">> /tts agent={req.agentName} chars={len(req.text)} "
-            f"num_beams={req.num_beams} {time.perf_counter() - started:.2f}s"
-        )
-
         if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
             raise HTTPException(status_code=500, detail="synthesis produced no audio")
 
+        t_mp3 = time.perf_counter()
         mp3_bytes = await asyncio.to_thread(wav_to_mp3, wav_path, cmd_args.mp3_bitrate)
+        if timings:
+            timings["mp3"] = time.perf_counter() - t_mp3
+
+        detail = ""
+        if timings:
+            detail = " " + " ".join(f"{k}={v:.2f}" for k, v in timings.items() if v >= 0.01)
+        print(
+            f">> /tts agent={req.agentName} chars={len(req.text)} "
+            f"n_timesteps={req.n_timesteps} {time.perf_counter() - started:.2f}s{detail}"
+        )
     finally:
         try:
             os.remove(wav_path)
