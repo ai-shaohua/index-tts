@@ -1,3 +1,21 @@
+"""IndexTTS FastAPI server.
+
+Benchmarking / debugging note
+----------------------------
+Keep exactly ONE process with the model loaded. Measure latency by POSTing to
+a running server's /tts and reading the per-stage breakdown it logs
+(gpt/cfm/bigvgan/mp3) -- do NOT start a separate script that constructs its own
+IndexTTS() while this server is up. Two resident models exhaust RAM and will
+crash the machine. Kill stale servers first:
+
+    ps aux | grep "[s]erver.py" | awk '{print $2}' | xargs -r kill -9
+
+Send requests sequentially; inference is serialized behind infer_lock anyway,
+so concurrent requests only add memory pressure without improving throughput.
+Note that background system load can easily double a measurement -- check
+`uptime` before trusting absolute timings.
+"""
+
 import argparse
 import asyncio
 import os
