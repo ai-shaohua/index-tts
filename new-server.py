@@ -1,14 +1,31 @@
-"""IndexTTS FastAPI server.
+"""IndexTTS FastAPI server with sentence-level splitting (port 3003).
+
+A copy of server.py that splits the incoming text at sentence ends and
+semicolons, synthesizes each segment separately, and concatenates the pieces
+with a fixed silence between them -- so a full stop gets a real 500ms pause
+instead of whatever breath the model happened to generate.
+
+Splitting happens BEFORE normalization (see PRDs/2026-10/sentence-split-tts-spec.md
+section 1): the semicolon is only used to pick the cut points, and each raw
+segment then goes through the model's own normalization untouched. The model
+still collapses a trailing ';' to ',' internally -- that does not matter,
+because the pause is silence spliced into the audio, not a symbol in the text.
+
+server.py and webui.py are deliberately left alone; this is a new port.
 
 Benchmarking / debugging note
 ----------------------------
 Keep exactly ONE process with the model loaded. Measure latency by POSTing to
-a running server's /tts and reading the per-stage breakdown it logs
-(gpt/cfm/bigvgan/mp3) -- do NOT start a separate script that constructs its own
-IndexTTS() while this server is up. Two resident models exhaust RAM and will
-crash the machine. Kill stale servers first:
+a running server's /tts and reading the per-segment lines it logs (one per
+sentence, with that segment's audio length and wall time) -- do NOT start a
+separate script that constructs its own IndexTTS() while this server is up.
+Two resident models exhaust RAM and will crash the machine. Kill stale servers
+first:
 
-    ps aux | grep "[s]erver.py" | awk '{print $2}' | xargs -r kill -9
+    pgrep -f "new-server.py|server.py" | xargs -r kill -9
+
+Unlike server.py this does not report the gpt/cfm/bigvgan stage breakdown:
+those timings are per-synthesize() and there is now one call per sentence.
 
 Send requests sequentially; inference is serialized behind infer_lock anyway,
 so concurrent requests only add memory pressure without improving throughput.
@@ -18,12 +35,15 @@ Note that background system load can easily double a measurement -- check
 
 import argparse
 import asyncio
+import base64
 import os
 import subprocess
 import sys
 import tempfile
 import time
 import warnings
+
+import numpy as np
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -35,13 +55,14 @@ sys.path.append(os.path.join(current_dir, "indextts"))
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from pydantic import BaseModel, Field
+
+from sentence_split import concat_segments, split_sentences
 
 
 parser = argparse.ArgumentParser(description="IndexTTS FastAPI Server")
 parser.add_argument("--host", type=str, default="0.0.0.0")
-parser.add_argument("--port", type=int, default=3002)
+parser.add_argument("--port", type=int, default=3003)
 parser.add_argument("--model_dir", type=str, default="./checkpoints")
 parser.add_argument("--version", type=str, default="2.5", choices=["2", "2.5"], help="Model version to use")
 parser.add_argument("--examples_dir", type=str, default="./wolf-audio")
@@ -200,33 +221,60 @@ else:
             _mlx_speakers[key] = spk
         return spk
 
-    def _synthesize_mlx(prompt_path, text, wav_path, lang, duration_factor,
-                        n_timesteps, max_text_tokens_per_segment):
-        t0 = time.perf_counter()
-        spk = mlx_speaker(prompt_path)
-        t_spk = time.perf_counter() - t0
+    def _synthesize_mlx_pcm(spk, text, lang, duration_factor,
+                            n_timesteps, max_text_tokens_per_segment):
+        """One segment -> int16 PCM [N]. No wav file; the caller concatenates.
 
-        t0 = time.perf_counter()
-        pcm = tts.synthesize(
+        interval_silence=0 because any split *inside* this segment is the
+        model's own token-budget split, which must not get a 500/333ms pause
+        (spec section 4.1). The speaker context is built once by the caller and
+        reused for every segment.
+        """
+        return tts.synthesize(
             text,
             lang=lang,
             spk=spk,
             duration_factor=duration_factor,
             n_timesteps=n_timesteps,
             max_text_tokens_per_segment=max_text_tokens_per_segment,
+            interval_silence=0,
         )
-        t_syn = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
-        tts.write_wav(wav_path, pcm)
-        timings = dict(getattr(tts._pipe, "last_timings", {}))
-        timings["spk"] = t_spk
-        timings["wav"] = time.perf_counter() - t0
-        # Whatever synthesize() spent outside the stages it reports (text
-        # frontend, numpy concat, MLX graph sync).
-        timings["other"] = t_syn - sum(
-            v for k, v in timings.items() if k not in ("spk", "wav"))
-        return timings
+SAMPLING_RATE = 22050   # both backends (pipeline.py:19, infer_v2_5.py:737)
+
+
+def normalize_for_display(text: str, lang: str) -> str:
+    """Reproduce the model's normalization step, for the debug read-out.
+
+    APPROXIMATE on purpose: this mirrors `char_rep_map` cleanup + WeTextProcessing,
+    but not the `.lower()`, pronunciation-annotation expansion, `<|LANG|>` prefix
+    or tokenizer split that follow it. Good enough to tell "the normalizer read
+    this number wrong" from "the model mispronounced it"; not the final tokens.
+
+    A trailing `;` comes back as `,` here -- that is what the model really sees
+    (spec section 5.1). The pause is spliced into the audio, so it is unaffected.
+    """
+    lang = (lang or "zh").lower()
+    try:
+        if USE_MLX:
+            from index_tts_2_5_mlx.core.frontend import CHAR_REP_MAP, CLEAN_PATTERN
+
+            text = CLEAN_PATTERN.sub(lambda x: CHAR_REP_MAP[x.group()], text)
+            fe = tts._pipe.frontend
+            if fe.use_normalization and lang in ("zh", "zhen", "en"):
+                text = fe.normalizer.normalize(text)
+            return text
+        normalizer = getattr(tts, "text_process", None) or tts.normalizer
+        text = normalizer.clean_pattern.sub(
+            lambda x: normalizer.char_rep_map[x.group()], text)
+        if lang in ("zh", "zhen", "en"):
+            text = normalizer.normalize(text)
+        return text
+    except Exception as e:
+        # A debug read-out must never fail the request it is attached to.
+        print(f">> normalize_for_display failed: {e}")
+        return text
+
 
 # inference is not thread-safe — serialize calls
 infer_lock = asyncio.Lock()
@@ -259,6 +307,13 @@ class TTSRequest(BaseModel):
     max_text_tokens_per_segment: int = Field(default=120, ge=20, le=400)
 
 
+def _write_wav(path: str, pcm: np.ndarray) -> None:
+    """int16 PCM [N] -> mono 22050 Hz wav."""
+    import soundfile as sf
+
+    sf.write(path, pcm.astype(np.int16, copy=False), SAMPLING_RATE, subtype="PCM_16")
+
+
 def wav_to_mp3(wav_path: str, bitrate: str) -> bytes:
     proc = subprocess.run(
         [
@@ -285,82 +340,150 @@ async def health():
     }
 
 
-@app.post("/tts")
-async def synthesize(req: TTSRequest):
-    prompt_path = os.path.join(cmd_args.examples_dir, f"{req.agentName}.wav")
-    if not os.path.isfile(prompt_path):
-        raise HTTPException(status_code=404, detail=f"voice prompt not found: {prompt_path}")
-
+def _resolve_lang(req: TTSRequest) -> str:
+    """Validate `lang` against the active backend; returns the backend's own code."""
+    lang = (req.lang or "ZH").upper()
     if USE_MLX:
-        lang = (req.lang or "ZH").upper()
         mlx_lang = MLX_LANGS.get(lang)
         if mlx_lang is None:
             raise HTTPException(
                 status_code=400,
                 detail=f"MLX backend supports {', '.join(MLX_LANGS)} (got {req.lang})",
             )
+        return mlx_lang
+    if IS_V25 and lang not in LANGUAGES_V25:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported lang: {req.lang} (choose from {LANGUAGES_V25})",
+        )
+    return lang
+
+
+def _split_payload(req: TTSRequest, lang: str):
+    """-> (pairs, response body). Both endpoints go through here, so there is
+    one split per request and one implementation of it.
+
+    `min_length=1` on TTSRequest.text lets a whitespace-only string through, so
+    re-check after strip() here (spec section 5.2).
+    """
+    pairs = split_sentences(req.text)
+    if not pairs:
+        raise HTTPException(status_code=400, detail="text is empty after stripping whitespace")
+
+    sentences = [seg for seg, _ in pairs]
+    return pairs, {
+        "sentences": sentences,
+        "sentences_normalized": [normalize_for_display(seg, lang) for seg in sentences],
+        # silences_ms[i] is the pause AFTER sentences[i]. The last segment's
+        # pause is always 0 and is not reported, so this is one shorter.
+        "silences_ms": [ms for _, ms in pairs[:-1]],
+    }
+
+
+@app.post("/split")
+async def split(req: TTSRequest):
+    """Debug only. Shows the cut points and the normalized read-out without
+    spending synthesis time -- use it to tell a normalization bug from a
+    mispronunciation. NOT a prerequisite for /tts, which splits internally.
+    """
+    return _split_payload(req, _resolve_lang(req))[1]
+
+
+@app.post("/tts")
+async def synthesize(req: TTSRequest):
+    prompt_path = os.path.join(cmd_args.examples_dir, f"{req.agentName}.wav")
+    if not os.path.isfile(prompt_path):
+        raise HTTPException(status_code=404, detail=f"voice prompt not found: {prompt_path}")
+
+    lang = _resolve_lang(req)
+    pairs, payload = _split_payload(req, lang)
+
+    if USE_MLX:
         global _mlx_beams_warned
         if req.num_beams != 1 and not _mlx_beams_warned:
             print(f">> MLX has no beam search; ignoring num_beams={req.num_beams}")
             _mlx_beams_warned = True
     else:
-        infer_kwargs = {"num_beams": req.num_beams}
+        infer_kwargs = {"num_beams": req.num_beams, "interval_silence": 0}
         if IS_V25:
-            lang = (req.lang or "ZH").upper()
-            if lang not in LANGUAGES_V25:
-                raise HTTPException(status_code=400, detail=f"unsupported lang: {req.lang} (choose from {LANGUAGES_V25})")
             infer_kwargs["lang"] = lang
             infer_kwargs["duration_factor"] = float(req.duration_factor)
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        wav_path = tmp.name
+    def _segment_pcm_torch(seg_text):
+        result = tts.infer(prompt_path, seg_text, None, **infer_kwargs)
+        if not isinstance(result, tuple):
+            return None
+        _sr, wav_data = result   # (samples, channels)
+        wav = np.asarray(wav_data)
+        if wav.ndim > 1:
+            wav = wav[:, 0]
+        return wav.astype(np.int16, copy=False)
 
     started = time.perf_counter()
-    try:
-        async with infer_lock:
+    seg_pcms = []
+    # Hold the lock across ALL segments: releasing between them would let
+    # another request interleave its own segments into the model.
+    async with infer_lock:
+        spk = mlx_speaker(prompt_path) if USE_MLX else None
+        for i, (seg_text, ms) in enumerate(pairs, start=1):
+            t_seg = time.perf_counter()
             if USE_MLX:
                 # MLX streams are thread-local. The model was loaded on this
                 # thread; a worker thread raises "no Stream(cpu, 1)".
-                timings = _synthesize_mlx(
-                    prompt_path,
-                    req.text,
-                    wav_path,
-                    mlx_lang,
+                pcm = _synthesize_mlx_pcm(
+                    spk,
+                    seg_text,
+                    lang,
                     float(req.duration_factor),
                     req.n_timesteps,
                     req.max_text_tokens_per_segment,
                 )
             else:
-                timings = None
-                await asyncio.to_thread(
-                    tts.infer,
-                    prompt_path,
-                    req.text,
-                    wav_path,
-                    **infer_kwargs,
+                pcm = await asyncio.to_thread(_segment_pcm_torch, seg_text)
+
+            if pcm is None or len(pcm) == 0:
+                # One bad segment fails the whole request; never return a
+                # half-finished utterance.
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"synthesis produced no audio for segment {i}/{len(pairs)}",
                 )
-        if not os.path.exists(wav_path) or os.path.getsize(wav_path) == 0:
-            raise HTTPException(status_code=500, detail="synthesis produced no audio")
 
-        t_mp3 = time.perf_counter()
+            tail = seg_text.rstrip()[-1:] or "-"
+            print(
+                f">>   seg {i}/{len(pairs)} tail={tail!r} chars={len(seg_text)} "
+                f"audio={len(pcm) / SAMPLING_RATE:.2f}s pause={ms}ms "
+                f"{time.perf_counter() - t_seg:.2f}s"
+            )
+
+            seg_pcms.append(pcm)
+
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        wav_path = tmp.name
+    try:
+        # concat_segments applies the 20ms tail fade before each silence: the
+        # stop token sometimes lands early, and that step would otherwise click
+        # at every seam (spec section 4.3).
+        wav = concat_segments(seg_pcms, [ms for _, ms in pairs], SAMPLING_RATE)
+        await asyncio.to_thread(_write_wav, wav_path, wav)
         mp3_bytes = await asyncio.to_thread(wav_to_mp3, wav_path, cmd_args.mp3_bitrate)
-        if timings:
-            timings["mp3"] = time.perf_counter() - t_mp3
-
-        detail = ""
-        if timings:
-            detail = " " + " ".join(f"{k}={v:.2f}" for k, v in timings.items() if v >= 0.01)
-        print(
-            f">> /tts agent={req.agentName} chars={len(req.text)} "
-            f"n_timesteps={req.n_timesteps} {time.perf_counter() - started:.2f}s{detail}"
-        )
     finally:
         try:
             os.remove(wav_path)
         except OSError:
             pass
 
-    return Response(content=mp3_bytes, media_type="audio/mpeg")
+    print(
+        f">> /tts agent={req.agentName} chars={len(req.text)} "
+        f"segments={len(pairs)} n_timesteps={req.n_timesteps} "
+        f"audio={len(wav) / SAMPLING_RATE:.2f}s {time.perf_counter() - started:.2f}s"
+    )
+
+    return {
+        **payload,
+        "audio_base64": base64.b64encode(mp3_bytes).decode("ascii"),
+        "media_type": "audio/mpeg",
+    }
 
 
 if __name__ == "__main__":
