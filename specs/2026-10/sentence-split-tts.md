@@ -132,11 +132,40 @@ PRD 第 90–97 行把切段结果写成归一化后的文本（`六号开枪,�
 
 IndexTTS 的波形长度由采样到的 `stop_mel_token` 下标推出，停止符偶尔落得偏早，一段的最后一个采样点可能离零很远（见 `indextts/utils/common.py:68` 的 `fade_out_tail` 注释）。原来整段生成时，这个阶跃在文件末尾，听感上是收尾一声轻咔哒；现在每段后面紧跟一段数字静音，阶跃落在**段落接缝**上，每个接缝都可能咔一下，而且 500ms 静音会让它更显眼。
 
-PyTorch 路径的 `infer_generator` 在最终拼接后调用了 `fade_out_tail`，但那是对整条音频的末尾，段间接缝拿不到。MLX 路径（v2.5 默认）**完全没有**这个淡出。
+PyTorch 路径的 `infer_generator` 在最终拼接后调用了 `fade_out_tail`（`infer_v2_5.py:868`），但那是对整条音频的末尾，段间接缝拿不到。MLX 路径（v2.5 默认）**完全没有**这个淡出。
 
-建议：在每段 PCM 追加静音之前，对该段末尾施加 `fade_out_tail`（默认 `TAIL_FADE_MS`）。上游实测 112 条正常生成中 62 条逐比特未变、其余最大改动不超过 -42.8 dBFS，所以无条件施加没有代价。实现上 `indextts/utils/common.fade_out_tail` 接受 `(channels, samples)` 张量，MLX 侧需要包一层 numpy↔torch，或照它的 20 行逻辑写一份 numpy 版。
+做法：在每段 PCM 追加静音之前，对该段末尾施加 20ms 升余弦淡出。上游实测 112 条正常生成中 62 条逐比特未变、其余最大改动不超过 -42.8 dBFS（中位 -76.8 dBFS），所以无条件施加，不加检测阈值。
 
-**需确认：是否接受这条额外改动。** 不做也能跑通全部 PRD 验收项，只是接缝可能有咔哒声。
+`indextts/utils/common.fade_out_tail` 收的是 `(channels, samples)` 的 torch 张量，而 MLX 路径全程 numpy。为一个 20ms 斜坡把 torch 拽进纯 numpy 流程不划算，`new-server.py` 内写一份 numpy 版（`common.py` 不动）：
+
+```python
+TAIL_FADE_MS = 20.0   # 与 indextts/utils/common.TAIL_FADE_MS 保持一致
+
+def fade_out_tail_np(pcm, sr=22050, fade_ms=TAIL_FADE_MS):
+    """把 int16 PCM [N] 末尾 fade_ms 斜坡降到零。不修改入参。
+
+    升余弦而不是线性：到零时斜率也为零，淡出本身不引入新的导数不连续点。
+    """
+    n = min(int(sr * fade_ms / 1000.0), pcm.shape[-1])
+    if n <= 1:
+        return pcm
+    ramp = 0.5 * (1.0 + np.cos(np.linspace(0.0, math.pi, n)))
+    out = pcm.copy()
+    out[-n:] = (out[-n:].astype(np.float32) * ramp).astype(pcm.dtype)
+    return out
+```
+
+调用处（§4.2 的拼接循环里）只多一行：
+
+```python
+parts.append(fade_out_tail_np(seg_pcm))   # 原本是 parts.append(seg_pcm)
+if ms:
+    parts.append(np.zeros(round(22050 * ms / 1000), dtype=np.int16))
+```
+
+PyTorch 路径返回的 `wav_data` 形状是 `(samples, channels)`，取单声道展平成 `[N]` 后同样过这个函数；它原本在 `infer_generator` 里对整条音频做的那次淡出保持不变，重复施加一次 20ms 斜坡无害（落在已经接近零的尾部）。
+
+已与上游 torch 版逐采样比对，最大差 1 个 LSB（int16 取整舍入），听感无差异。测试里用一条断言钉住这个等价关系，防止以后两份实现漂移（见 §7）。
 
 ## 5. 接口
 
@@ -231,6 +260,8 @@ PyTorch 路径的 `infer_generator` 在最终拼接后调用了 `fade_out_tail`�
 | 纯空白 / 空字符串 | 返回 `[]` |
 | 尾段带句号 | 最后一段停顿为 0 |
 
+淡出等价性（不需要模型权重，需要 torch）：随机 int16 PCM 上 `fade_out_tail_np(pcm)` 与上游 `fade_out_tail(torch.from_numpy(pcm)[None], 22050)[0]` 逐采样差 ≤ 1。钉住 §4.3 两份实现不漂移。
+
 归一化一致性回归（需要 wetext，不需要模型权重）：逐段归一化拼接 == 整段归一化，用 PRD 验收文本。
 
 端到端（手动，单进程）：起 `new-server.py`，`curl /split` 比对 JSON；`curl /tts` 存 mp3 听接缝与段尾；确认只启 `new-webui.py` 时 RSS 不出现模型级占用。
@@ -255,5 +286,6 @@ PRD §验收 的每一条：
 ## 9. 待确认
 
 1. **§3** 界面展示原文片段，还是同时展示 `sentences_normalized`？
-2. **§4.3** 是否接受段尾淡出这条额外改动？不做则接缝可能有咔哒声。
-3. **§8 第 2 条** 「`；` 保留为 `;` 送进模型」这个字面要求可以放弃吗？MLX 后端无法在不 fork 上游的前提下做到，而放弃它不影响任何听感——停顿是拼在音频上的。
+2. **§8 第 2 条** 「`；` 保留为 `;` 送进模型」这个字面要求可以放弃吗？MLX 后端无法在不 fork 上游的前提下做到，而放弃它不影响任何听感——停顿是拼在音频上的。
+
+（原「是否做段尾淡出」已确认采纳，见 §4.3。）
