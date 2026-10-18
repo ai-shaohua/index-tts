@@ -65,8 +65,17 @@ SPLIT_PATTERN = re.compile(
     r'|(?<=(?<!\d)\.)(?=\d)'   # '.' 后面是数字但前面不是 -> 仍是句号（如 "出局.7号"）
 )
 
-PAUSE_MS = {'.': 500, '。': 500, '!': 500, '！': 500, '?': 500, '？': 500,
-            ';': 333, '；': 333}   # 333 == round(500 * 2 / 3)
+# --- 停顿时长：调效果就改这两个常量，其余全部由它们推导 ---
+SENTENCE_PAUSE_MS = 500                                      # 句末停顿
+SEMICOLON_PAUSE_RATIO = 2 / 3                                # 分号停顿 = 句末 × 该比例
+SEMICOLON_PAUSE_MS = round(SENTENCE_PAUSE_MS * SEMICOLON_PAUSE_RATIO)   # -> 333
+
+PAUSE_MS = {
+    '.': SENTENCE_PAUSE_MS, '。': SENTENCE_PAUSE_MS,
+    '!': SENTENCE_PAUSE_MS, '！': SENTENCE_PAUSE_MS,
+    '?': SENTENCE_PAUSE_MS, '？': SENTENCE_PAUSE_MS,
+    ';': SEMICOLON_PAUSE_MS, '；': SEMICOLON_PAUSE_MS,
+}
 
 def split_sentences(text: str) -> list[tuple[str, int]]:
     """原文 -> [(送去合成的原文片段, 该片段后面的停顿毫秒), ...]
@@ -82,6 +91,7 @@ def split_sentences(text: str) -> list[tuple[str, int]]:
 - 不切：`,` `，` `、` `：` `:` `…` `……` 换行。换行留在段内，交给归一化处理成空格。
 - `strip()` 后为空、或只剩空白的片段丢弃，不发合成请求。连续 `。。` / `；；` 只产生一段（第二个标点并入同段尾部，不产生空段）。
 - 每段的停顿只看该段 `rstrip()` 后的最后一个字符；不在 `PAUSE_MS` 里（例如没有句末标点的尾段）则为 0。
+- 停顿时长集中在 `SENTENCE_PAUSE_MS` / `SEMICOLON_PAUSE_RATIO` 两个常量里，便于调效果。代码里不得出现裸的 `500` / `333`；`PAUSE_MS` 和 §4.2 的静音长度都从常量推导。两者都改为 0 时退化成「只切分、不插静音」，拼接逻辑无需特判。
 - 最后一段的停顿强制为 0，无论它以什么标点结尾。
 - 只有一段时不插入任何静音。
 
@@ -124,7 +134,7 @@ PRD 第 90–97 行把切段结果写成归一化后的文本（`六号开枪,�
 ### 4.2 静音与拼接
 
 - 采样率 22050、单声道、int16，与两条后端一致（`pipeline.py:19`、`infer_v2_5.py:737`）。
-- `silence = np.zeros(round(22050 * ms / 1000), dtype=np.int16)`；500ms → 11025 采样，333ms → 7343 采样。
+- `silence = np.zeros(round(22050 * ms / 1000), dtype=np.int16)`，`ms` 取自 `split_sentences` 返回的每段停顿（即 §3 的常量）。按默认值：500ms → 11025 采样，333ms → 7343 采样。`ms == 0` 时不追加任何数组。
 - 拼接顺序：`seg[0], sil[0], seg[1], sil[1], …, seg[n-1]`，尾部不追加静音。
 - 合成后一次性写临时 wav，再走现有 `wav_to_mp3()` 转 mp3。
 
@@ -269,9 +279,10 @@ PyTorch 路径返回的 `wav_data` 形状是 `(samples, channels)`，取单声�
 
 | 用例 | 断言 |
 |---|---|
-| PRD 验收文本 | 4 段；切点如 §3；`silences_ms == [500, 500, 333]` |
+| PRD 验收文本 | 4 段；切点如 §3；停顿为 `[SENTENCE, SENTENCE, SEMICOLON]`（默认值即 `[500, 500, 333]`） |
 | 顿号 | `、` 不切段，留在第 3 段内 |
-| 分号 | `；` 留在第 3 段**末尾**不被丢弃，且该段停顿为 333ms |
+| 分号 | `；` 留在第 3 段**末尾**不被丢弃，且该段停顿为 `SEMICOLON_PAUSE_MS` |
+| 常量可调 | `monkeypatch` 把 `SENTENCE_PAUSE_MS` 改成 800，断言句末停顿变 800、分号停顿变 533（`round(800 * 2/3)`）——钉住「没有裸字面量」 |
 | 冒号 | `：` 不切段 |
 | 单段无标点 | `len(sentences) == 1`，`silences_ms == []` |
 | 连续句号 `啊。。好。` | 不产生空段 |
