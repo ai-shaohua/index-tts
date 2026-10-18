@@ -53,7 +53,7 @@ sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, "indextts"))
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -389,8 +389,10 @@ async def split(req: TTSRequest):
     return _split_payload(req, _resolve_lang(req))[1]
 
 
-@app.post("/tts")
-async def synthesize(req: TTSRequest):
+async def _synthesize(req: TTSRequest):
+    """-> (split payload, mp3 bytes). Shared by /tts and /tts/rich so the two
+    endpoints differ only in what they serialize, never in how they synthesize.
+    """
     prompt_path = os.path.join(cmd_args.examples_dir, f"{req.agentName}.wav")
     if not os.path.isfile(prompt_path):
         raise HTTPException(status_code=404, detail=f"voice prompt not found: {prompt_path}")
@@ -479,6 +481,24 @@ async def synthesize(req: TTSRequest):
         f"audio={len(wav) / SAMPLING_RATE:.2f}s {time.perf_counter() - started:.2f}s"
     )
 
+    return payload, mp3_bytes
+
+
+@app.post("/tts")
+async def synthesize(req: TTSRequest):
+    """Same contract as server.py's /tts: raw audio/mpeg body, nothing else.
+    Existing clients see no difference from the non-splitting server.
+    """
+    _payload, mp3_bytes = await _synthesize(req)
+    return Response(content=mp3_bytes, media_type="audio/mpeg")
+
+
+@app.post("/tts/rich")
+async def synthesize_rich(req: TTSRequest):
+    """JSON variant for new-webui.py: the same audio, base64-encoded, plus the
+    split points and normalized read-out the page displays alongside it.
+    """
+    payload, mp3_bytes = await _synthesize(req)
     return {
         **payload,
         "audio_base64": base64.b64encode(mp3_bytes).decode("ascii"),

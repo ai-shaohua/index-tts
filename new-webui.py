@@ -4,7 +4,7 @@
 **不 import indextts，不构造任何模型对象** —— 同一时刻只允许一个带模型的进程
 （见 memory/tts-benchmark-single-process.md）。
 
-点击生成只调一次 `POST /tts`：切分、逐段合成、拼接都在服务器里，
+点击生成只调一次 `POST /tts/rich`：切分、逐段合成、拼接都在服务器里，
 响应已同时带回 sentences / sentences_normalized / silences_ms 和音频，
 所以界面不需要再调 debug 用的 `/split`。
 方案见 PRDs/2026-10/sentence-split-tts-spec.md 第 6 节。
@@ -83,7 +83,7 @@ def generate(agent_name, lang, text):
 
     try:
         resp = requests.post(
-            f"{cmd_args.server.rstrip('/')}/tts",
+            f"{cmd_args.server.rstrip('/')}/tts/rich",
             json={"agentName": agent_name, "text": text, "lang": lang},
             timeout=cmd_args.timeout,
         )
