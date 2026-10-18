@@ -24,25 +24,10 @@ SPLIT_PATTERN = re.compile(
 
 # --- 停顿时长：调效果就改这两个常量，其余全部由它们推导 ---
 SENTENCE_PAUSE_MS = 300                       # 句末停顿
-SEMICOLON_PAUSE_RATIO = 2 / 3                 # 分号停顿 = 句末 × 该比例
+SEMICOLON_PAUSE_MS = 250                 # 分号停顿 = 句末 × 该比例
 
 SENTENCE_PUNCT = frozenset('.。!！?？')
 SEMICOLON_PUNCT = frozenset(';；')
-
-
-def semicolon_pause_ms() -> int:
-    """分号停顿，由句末停顿推导（默认 500 -> 333）。
-
-    每次调用重新算，而不是 import 时冻结成一个常量：这样把
-    `SENTENCE_PAUSE_MS` 调成 800 时分号自动跟着变成 533，
-    代码里不会出现第二处需要同步的裸数字。
-    """
-    return round(SENTENCE_PAUSE_MS * SEMICOLON_PAUSE_RATIO)
-
-
-# 向后兼容方案 §3 里的名字；需要当前值请调 semicolon_pause_ms()。
-SEMICOLON_PAUSE_MS = semicolon_pause_ms()
-
 
 def pause_after(segment: str) -> int:
     """该片段后面应插入的静音毫秒数；没有句末标点或分号则为 0。"""
@@ -53,7 +38,7 @@ def pause_after(segment: str) -> int:
     if ch in SENTENCE_PUNCT:
         return SENTENCE_PAUSE_MS
     if ch in SEMICOLON_PUNCT:
-        return semicolon_pause_ms()
+        return SEMICOLON_PAUSE_MS
     return 0
 
 
