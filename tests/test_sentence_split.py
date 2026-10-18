@@ -18,11 +18,11 @@ import numpy as np  # noqa: E402
 
 import sentence_split  # noqa: E402
 from sentence_split import (  # noqa: E402
+    SEMICOLON_PAUSE_MS,
     SENTENCE_PAUSE_MS,
     TAIL_FADE_MS,
     concat_segments,
     fade_out_tail_np,
-    semicolon_pause_ms,
     silence_pcm,
     split_sentences,
 )
@@ -60,10 +60,8 @@ def test_acceptance_text_splits_into_four_segments():
 
 def test_acceptance_text_pauses():
     assert _pauses(ACCEPTANCE_TEXT) == [
-        SENTENCE_PAUSE_MS, SENTENCE_PAUSE_MS, semicolon_pause_ms(),
+        SENTENCE_PAUSE_MS, SENTENCE_PAUSE_MS, SEMICOLON_PAUSE_MS,
     ]
-    # 默认值下就是 PRD 写的 500 / 500 / 333。
-    assert _pauses(ACCEPTANCE_TEXT) == [500, 500, 333]
 
 
 def test_ideographic_comma_stays_inside_its_segment():
@@ -76,11 +74,25 @@ def test_semicolon_is_kept_at_the_end_of_its_segment():
     segments = split_sentences(ACCEPTANCE_TEXT)
     seg, ms = segments[2]
     assert seg.endswith("；"), "分号必须留在段尾，不被丢弃"
-    assert ms == semicolon_pause_ms()
+    assert ms == SEMICOLON_PAUSE_MS
 
 
-def test_colon_does_not_split():
-    assert _sentences("他说：我是预言家。") == ["他说：我是预言家。"]
+def test_colon_splits_with_the_semicolon_pause():
+    """冒号切段，停顿与分号一致。"""
+    assert split_sentences("他说：我是预言家。") == [
+        ("他说：", SEMICOLON_PAUSE_MS),
+        ("我是预言家。", 0),
+    ]
+    assert split_sentences("he said:I am seer.") == [
+        ("he said:", SEMICOLON_PAUSE_MS),
+        ("I am seer.", 0),
+    ]
+
+
+@pytest.mark.parametrize("text", ["现在 12:30 开会。", "现在 12：30 开会。"])
+def test_colon_between_digits_does_not_split(text):
+    """时间里的冒号两侧都是数字，不切，否则会读成「十二」+「三十」。"""
+    assert _sentences(text) == [text]
 
 
 def test_comma_and_ellipsis_do_not_split():
@@ -110,18 +122,20 @@ def test_last_segment_pause_is_zero():
     assert split_sentences(ACCEPTANCE_TEXT)[-1][1] == 0
 
 
-def test_pause_constants_are_derived_not_hardcoded(monkeypatch):
-    """钉住「代码里没有裸的 500 / 333」：改句末常量，分号停顿跟着变。"""
+def test_pauses_come_from_the_constants(monkeypatch):
+    """钉住「代码里没有裸的毫秒数」：改常量，停顿跟着变。"""
     monkeypatch.setattr(sentence_split, "SENTENCE_PAUSE_MS", 800)
+    monkeypatch.setattr(sentence_split, "SEMICOLON_PAUSE_MS", 533)
 
-    assert sentence_split.semicolon_pause_ms() == round(800 * 2 / 3) == 533
-    assert sentence_split.split_sentences("啊。好；行。")[0][1] == 800
-    assert sentence_split.split_sentences("啊。好；行。")[1][1] == 533
+    assert [ms for _, ms in sentence_split.split_sentences("啊。好；行：对。")] == [
+        800, 533, 533, 0,
+    ]
 
 
 def test_both_constants_zero_degenerates_to_split_only(monkeypatch):
     """两个常量都为 0 时退化成「只切分、不插静音」，拼接逻辑无需特判。"""
     monkeypatch.setattr(sentence_split, "SENTENCE_PAUSE_MS", 0)
+    monkeypatch.setattr(sentence_split, "SEMICOLON_PAUSE_MS", 0)
 
     pairs = sentence_split.split_sentences(ACCEPTANCE_TEXT)
     assert len(pairs) == 4
@@ -138,7 +152,11 @@ def test_repeated_semicolons_produce_no_empty_segment():
     assert _sentences("啊；；好。") == ["啊；", "；", "好。"]
 
 
-@pytest.mark.parametrize("text", ["", "   ", "\n\t ", "。", "；"])
+def test_repeated_colons_produce_no_empty_segment():
+    assert _sentences("啊：：好。") == ["啊：", "：", "好。"]
+
+
+@pytest.mark.parametrize("text", ["", "   ", "\n\t ", "。", "；", "："])
 def test_degenerate_input(text):
     """纯空白与空字符串返回 []；只有标点时仍是一段（没有空段）。"""
     pairs = split_sentences(text)
@@ -182,8 +200,8 @@ def test_english_full_stops_split():
 # --- 静音 -------------------------------------------------------------
 
 def test_silence_lengths_match_the_spec():
-    assert len(silence_pcm(SENTENCE_PAUSE_MS)) == 11025
-    assert len(silence_pcm(semicolon_pause_ms())) == 7343
+    assert len(silence_pcm(SENTENCE_PAUSE_MS)) == round(SAMPLE_RATE * SENTENCE_PAUSE_MS / 1000)
+    assert len(silence_pcm(SEMICOLON_PAUSE_MS)) == round(SAMPLE_RATE * SEMICOLON_PAUSE_MS / 1000)
     assert silence_pcm(0).size == 0
 
 
@@ -270,7 +288,7 @@ def test_concat_matches_the_split_contract():
 
     out = concat_segments(segs, [ms for _, ms in pairs], SAMPLE_RATE)
 
-    extra = len(silence_pcm(500)) * 2 + len(silence_pcm(333))
+    extra = sum(len(silence_pcm(ms, SAMPLE_RATE)) for _, ms in pairs)
     assert len(out) == len(pairs) * SAMPLE_RATE + extra
 
 

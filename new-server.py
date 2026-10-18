@@ -1,12 +1,12 @@
 """IndexTTS FastAPI server with sentence-level splitting (port 3002).
 
-A copy of server.py that splits the incoming text at sentence ends and
-semicolons, synthesizes each segment separately, and concatenates the pieces
-with a fixed silence between them -- so a full stop gets a real 500ms pause
-instead of whatever breath the model happened to generate.
+A copy of server.py that splits the incoming text at sentence ends, semicolons
+and colons, synthesizes each segment separately, and concatenates the pieces
+with a fixed silence between them -- so a full stop gets a real pause instead
+of whatever breath the model happened to generate.
 
 Splitting happens BEFORE normalization (see PRDs/2026-10/sentence-split-tts-spec.md
-section 1): the semicolon is only used to pick the cut points, and each raw
+section 1): the punctuation is only used to pick the cut points, and each raw
 segment then goes through the model's own normalization untouched. The model
 still collapses a trailing ';' to ',' internally -- that does not matter,
 because the pause is silence spliced into the audio, not a symbol in the text.
@@ -73,7 +73,7 @@ parser.add_argument("--accel", action="store_true", default=False, help="Use GPT
 parser.add_argument("--torch_compile", action="store_true", default=False, help="Use torch.compile to optimize s2mel if available")
 parser.add_argument("--qwen_emo", action="store_true", default=False, help="Load QwenEmotion even on a low-VRAM GPU, where it is skipped by default")
 parser.add_argument("--mp3_bitrate", type=str, default="128k")
-parser.add_argument("--n_timesteps", type=int, default=10, help="MLX: CFM solver steps per segment (upstream default 25; 10 is ~2.5x faster with little audible loss)")
+parser.add_argument("--n_timesteps", type=int, default=25, help="MLX: CFM solver steps per segment (upstream default 25; 10 is ~2.5x faster with little audible loss)")
 parser.add_argument("--mlx", action=argparse.BooleanOptionalAction, default=None, help="v2.5: serve with index-tts-2.5-mlx. On by default for v2.5; pass --no-mlx for the PyTorch backend. Does not change webui.py.")
 cmd_args, _ = parser.parse_known_args()
 

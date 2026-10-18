@@ -1,6 +1,6 @@
 """句末切分合成的 Gradio 界面（默认 7861）。
 
-只通过 HTTP 调 `new-server.py`（默认 http://127.0.0.1:3003）。
+只通过 HTTP 调 `new-server.py`（默认 http://127.0.0.1:3002）。
 **不 import indextts，不构造任何模型对象** —— 同一时刻只允许一个带模型的进程
 （见 memory/tts-benchmark-single-process.md）。
 
@@ -25,7 +25,7 @@ parser = argparse.ArgumentParser(
 )
 parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to run the web UI on")
 parser.add_argument("--port", type=int, default=7861, help="Port to run the web UI on")
-parser.add_argument("--server", type=str, default="http://127.0.0.1:3003",
+parser.add_argument("--server", type=str, default="http://127.0.0.1:3002",
                     help="Base URL of new-server.py")
 parser.add_argument("--examples_dir", type=str, default="./wolf-audio",
                     help="Voice prompt directory; the dropdown lists *.wav from here")
@@ -114,8 +114,9 @@ def generate(agent_name, lang, text):
 
 with gr.Blocks(title="IndexTTS 句末切分合成") as demo:
     gr.Markdown(
-        "## IndexTTS 句末与分号切分合成\n"
-        "按句末标点和分号切开，逐段合成后拼接：句末后面 500ms，分号后面 333ms。"
+        "## IndexTTS 句末、分号与冒号切分合成\n"
+        "按句末标点、分号和冒号切开，逐段合成后拼接；分号与冒号的停顿一致，"
+        "具体毫秒数由服务器的 `sentence_split` 常量决定。"
         f"合成由 `{cmd_args.server}` 完成，本页面不加载模型。"
     )
 
@@ -134,7 +135,7 @@ with gr.Blocks(title="IndexTTS 句末切分合成") as demo:
                 value=DEFAULT_TEXT,
                 label="原文",
                 lines=6,
-                placeholder="粘贴发言原文，句末和分号处会被切开逐段合成",
+                placeholder="粘贴发言原文，句末、分号和冒号处会被切开逐段合成",
             )
 
     run = gr.Button("生成", variant="primary")
