@@ -73,7 +73,7 @@ parser.add_argument("--accel", action="store_true", default=False, help="Use GPT
 parser.add_argument("--torch_compile", action="store_true", default=False, help="Use torch.compile to optimize s2mel if available")
 parser.add_argument("--qwen_emo", action="store_true", default=False, help="Load QwenEmotion even on a low-VRAM GPU, where it is skipped by default")
 parser.add_argument("--mp3_bitrate", type=str, default="128k")
-parser.add_argument("--n_timesteps", type=int, default=25, help="MLX: CFM solver steps per segment (upstream default 25; 10 is ~2.5x faster with little audible loss)")
+parser.add_argument("--n_timesteps", type=int, default=10, help="MLX: CFM solver steps per segment (upstream default 25; 10 is ~2.5x faster with little audible loss)")
 parser.add_argument("--mlx", action=argparse.BooleanOptionalAction, default=None, help="v2.5: serve with index-tts-2.5-mlx. On by default for v2.5; pass --no-mlx for the PyTorch backend. Does not change webui.py.")
 cmd_args, _ = parser.parse_known_args()
 
