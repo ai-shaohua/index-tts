@@ -1,4 +1,4 @@
-"""句末 / 分号 / 冒号切分与段尾淡出 —— new-server.py 的两个纯函数。
+"""句末 / 分号 / 冒号切分、短段合并与段尾淡出 —— new-server.py 的纯函数。
 
 放在单独模块里只有一个原因：`new-server.py` 在 import 时就加载模型权重，
 测试没法 import 它。这里不 import 任何模型相关的东西，
@@ -15,14 +15,16 @@ import numpy as np
 
 # 句末 / 分号 / 冒号。ASCII '.' 只在它是真小数点时不切：两侧都是数字才算小数
 # （`0.7` 是小数，`.7` 不是）。归一化前的原文里 `3.5` 还没变成「三点五」，
-# 按 '.' 无条件切会读成「三点」+「五」。ASCII ':' 同理：`12:30` 是时间，
-# 两侧都是数字就不切，否则会读成「十二」+「三十」。
+# 按 '.' 无条件切会读成「三点」+「五」。
+#
+# 冒号反过来：只有后面跟数字才切（`验人结果：12金水`），`他说：我是预言家`
+# 这种领起下文的冒号不切。前面也是数字时仍然不切 —— 那是 `12:30` 这种时间，
+# 切开会读成「十二」+「三十」。
 SPLIT_PATTERN = re.compile(
     r'(?<=[。！？；!?;])'      # 句末标点、分号
     r'|(?<=\.)(?!\d)'          # '.' 后面不是数字 -> 句号
     r'|(?<=(?<!\d)\.)(?=\d)'   # '.' 后面是数字但前面不是 -> 仍是句号（如 "出局.7号"）
-    r'|(?<=[:：])(?!\d)'       # 冒号后面不是数字 -> 冒号
-    r'|(?<=(?<!\d)[:：])(?=\d)'  # 后面是数字但前面不是 -> 仍是冒号（如 "结论:3号是狼"）
+    r'|(?<=(?<!\d)[:：])(?=\d)'  # 冒号后面是数字、前面不是 -> 切（如 "结论:3号是狼"）
 )
 
 # --- 停顿时长：调效果就改这两个常量，其余全部由它们推导 ---
@@ -32,6 +34,13 @@ SEMICOLON_PAUSE_MS = 250
 
 SENTENCE_PUNCT = frozenset('.。!！?？')
 SEMICOLON_PUNCT = frozenset(';；:：')
+
+# --- 合并阈值：太短的片段单独合成音质差，所以先攒够字数再送 ---
+# 当前 chunk 不足这么多字时，下一句并进来而不是另起一段。
+MIN_CHUNK_CHARS = 50
+# 最后一个 chunk 不足这么多字时并回前一个，绝不单独成段。
+MIN_TAIL_CHUNK_CHARS = 30
+
 
 def pause_after(segment: str) -> int:
     """该片段后面应插入的静音毫秒数；没有句末标点、分号或冒号则为 0。"""
@@ -46,8 +55,55 @@ def pause_after(segment: str) -> int:
     return 0
 
 
-def split_sentences(text: str) -> list[tuple[str, int]]:
+def _chunk_len(chunk: str) -> int:
+    """按 `strip()` 后的字符数算长度：首尾空白不该顶字数。"""
+    return len(chunk.strip())
+
+
+def merge_short_segments(
+    segments: list[str],
+    min_chars: int = MIN_CHUNK_CHARS,
+    min_tail_chars: int = MIN_TAIL_CHUNK_CHARS,
+) -> list[str]:
+    """把切出来的片段按字数攒成 chunk —— 短片段单独合成音质差。
+
+    规则（顺序扫描，不回看）：
+      1. 当前 chunk 不足 `min_chars` 字时，下一句并进来；够了才另起一段。
+         所以一个 chunk 一旦超过阈值就封口，不会无限增长。
+      2. 扫完之后，最后一个 chunk 不足 `min_tail_chars` 字就并回前一个 ——
+         它没有「下一句」可以把自己撑起来，单独成段只会得到那段糟糕的音频。
+
+    片段原样拼接（不插空格、不补标点）：片段末尾的标点已经在文本里，
+    合进来之后模型会在那里自然换气，只是不再有拼进音频的静音。
+    """
+    if not segments:
+        return []
+
+    chunks = [segments[0]]
+    for seg in segments[1:]:
+        if _chunk_len(chunks[-1]) < min_chars:
+            chunks[-1] += seg
+        else:
+            chunks.append(seg)
+
+    if len(chunks) > 1 and _chunk_len(chunks[-1]) < min_tail_chars:
+        # 先 pop 再写：`chunks[-2] += chunks.pop()` 的下标在 pop 之后才生效，
+        # 只有两段时会越界。
+        tail = chunks.pop()
+        chunks[-1] += tail
+
+    return chunks
+
+
+def split_sentences(
+    text: str,
+    min_chars: int = MIN_CHUNK_CHARS,
+    min_tail_chars: int = MIN_TAIL_CHUNK_CHARS,
+) -> list[tuple[str, int]]:
     """原文 -> [(送去合成的原文片段, 该片段后面的停顿毫秒), ...]
+
+    先按标点切，再按字数把太短的片段合并回去（见 `merge_short_segments`），
+    所以返回的段数通常少于标点数。两个阈值都传 0 就是「只切不合并」。
 
     最后一段的停顿恒为 0。片段按原顺序返回，标点保留在片段末尾
     （零宽后视切分不丢字符）。`strip()` 后为空的片段丢弃，所以
@@ -60,9 +116,12 @@ def split_sentences(text: str) -> list[tuple[str, int]]:
     if not segments:
         return []
 
-    pauses = [pause_after(seg) for seg in segments]
+    chunks = merge_short_segments(segments, min_chars, min_tail_chars)
+
+    # 停顿按合并后的段尾重算：被合进来的那些标点不再对应静音。
+    pauses = [pause_after(chunk) for chunk in chunks]
     pauses[-1] = 0   # 最后一段后面不插停顿，无论它以什么标点结尾
-    return list(zip(segments, pauses))
+    return list(zip(chunks, pauses))
 
 
 # 与 indextts/utils/common.TAIL_FADE_MS 保持一致。

@@ -115,8 +115,9 @@ def generate(agent_name, lang, text):
 with gr.Blocks(title="IndexTTS 句末切分合成") as demo:
     gr.Markdown(
         "## IndexTTS 句末、分号与冒号切分合成\n"
-        "按句末标点、分号和冒号切开，逐段合成后拼接；分号与冒号的停顿一致，"
-        "具体毫秒数由服务器的 `sentence_split` 常量决定。"
+        "按句末标点、分号和冒号（仅后跟数字时）切开，再把太短的片段并回前一段"
+        "——太短的片段单独合成音质差。分号与冒号的停顿一致，"
+        "阈值与毫秒数都由服务器的 `sentence_split` 常量决定。"
         f"合成由 `{cmd_args.server}` 完成，本页面不加载模型。"
     )
 
@@ -135,7 +136,7 @@ with gr.Blocks(title="IndexTTS 句末切分合成") as demo:
                 value=DEFAULT_TEXT,
                 label="原文",
                 lines=6,
-                placeholder="粘贴发言原文，句末、分号和冒号处会被切开逐段合成",
+                placeholder="粘贴发言原文，句末、分号和冒号处会被切开，太短的片段会并回前一段",
             )
 
     run = gr.Button("生成", variant="primary")

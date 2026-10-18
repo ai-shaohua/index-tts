@@ -23,6 +23,7 @@ from sentence_split import (  # noqa: E402
     TAIL_FADE_MS,
     concat_segments,
     fade_out_tail_np,
+    merge_short_segments,
     silence_pcm,
     split_sentences,
 )
@@ -38,13 +39,18 @@ ACCEPTANCE_TEXT = (
 )
 
 
+def _cut(text):
+    """只看切点：阈值归零关掉按字数的合并。"""
+    return split_sentences(text, min_chars=0, min_tail_chars=0)
+
+
 def _sentences(text):
-    return [seg for seg, _ in split_sentences(text)]
+    return [seg for seg, _ in _cut(text)]
 
 
 def _pauses(text):
     """除最后一段外每段后面的停顿，即 `/split` 返回的 silences_ms。"""
-    return [ms for _, ms in split_sentences(text)[:-1]]
+    return [ms for _, ms in _cut(text)[:-1]]
 
 
 # --- 切点 -------------------------------------------------------------
@@ -71,28 +77,29 @@ def test_ideographic_comma_stays_inside_its_segment():
 
 
 def test_semicolon_is_kept_at_the_end_of_its_segment():
-    segments = split_sentences(ACCEPTANCE_TEXT)
+    segments = _cut(ACCEPTANCE_TEXT)
     seg, ms = segments[2]
     assert seg.endswith("；"), "分号必须留在段尾，不被丢弃"
     assert ms == SEMICOLON_PAUSE_MS
 
 
-def test_colon_splits_with_the_semicolon_pause():
-    """冒号切段，停顿与分号一致。"""
-    assert split_sentences("他说：我是预言家。") == [
-        ("他说：", SEMICOLON_PAUSE_MS),
-        ("我是预言家。", 0),
-    ]
-    assert split_sentences("he said:I am seer.") == [
-        ("he said:", SEMICOLON_PAUSE_MS),
-        ("I am seer.", 0),
-    ]
-
-
-@pytest.mark.parametrize("text", ["现在 12:30 开会。", "现在 12：30 开会。"])
-def test_colon_between_digits_does_not_split(text):
-    """时间里的冒号两侧都是数字，不切，否则会读成「十二」+「三十」。"""
+@pytest.mark.parametrize("text", [
+    "他说：我是预言家。",        # 领起下文的冒号，后面不是数字
+    "他说:我是预言家。",
+    "现在 12:30 开会。",         # 时间，冒号前面也是数字
+    "现在 12：30 开会。",
+])
+def test_colon_not_followed_by_a_digit_does_not_split(text):
+    """冒号只有后跟数字才切；时间里的冒号前面也是数字，同样不切。"""
     assert _sentences(text) == [text]
+
+
+def test_colon_followed_by_a_digit_splits_with_the_semicolon_pause():
+    """`验人结果：12金水` 这种冒号切段，停顿与分号一致。"""
+    assert _cut("验人结果：12号是金水。") == [
+        ("验人结果：", SEMICOLON_PAUSE_MS),
+        ("12号是金水。", 0),
+    ]
 
 
 def test_comma_and_ellipsis_do_not_split():
@@ -107,7 +114,7 @@ def test_newline_stays_inside_the_segment():
 # --- 停顿 -------------------------------------------------------------
 
 def test_single_segment_without_punctuation():
-    pairs = split_sentences("我是预言家")
+    pairs = _cut("我是预言家")
     assert len(pairs) == 1
     assert _pauses("我是预言家") == []
 
@@ -116,10 +123,11 @@ def test_single_segment_with_punctuation_has_no_trailing_pause():
     """最后一段的停顿强制为 0，无论它以什么标点结尾。"""
     assert split_sentences("我是预言家。") == [("我是预言家。", 0)]
     assert split_sentences("我是预言家；") == [("我是预言家；", 0)]
+    assert split_sentences("我是预言家：") == [("我是预言家：", 0)]
 
 
 def test_last_segment_pause_is_zero():
-    assert split_sentences(ACCEPTANCE_TEXT)[-1][1] == 0
+    assert _cut(ACCEPTANCE_TEXT)[-1][1] == 0
 
 
 def test_pauses_come_from_the_constants(monkeypatch):
@@ -127,9 +135,8 @@ def test_pauses_come_from_the_constants(monkeypatch):
     monkeypatch.setattr(sentence_split, "SENTENCE_PAUSE_MS", 800)
     monkeypatch.setattr(sentence_split, "SEMICOLON_PAUSE_MS", 533)
 
-    assert [ms for _, ms in sentence_split.split_sentences("啊。好；行：对。")] == [
-        800, 533, 533, 0,
-    ]
+    text = "啊。好；行：1号。"
+    assert [ms for _, ms in _cut(text)] == [800, 533, 533, 0]
 
 
 def test_both_constants_zero_degenerates_to_split_only(monkeypatch):
@@ -137,7 +144,7 @@ def test_both_constants_zero_degenerates_to_split_only(monkeypatch):
     monkeypatch.setattr(sentence_split, "SENTENCE_PAUSE_MS", 0)
     monkeypatch.setattr(sentence_split, "SEMICOLON_PAUSE_MS", 0)
 
-    pairs = sentence_split.split_sentences(ACCEPTANCE_TEXT)
+    pairs = _cut(ACCEPTANCE_TEXT)
     assert len(pairs) == 4
     assert [ms for _, ms in pairs] == [0, 0, 0, 0]
 
@@ -152,18 +159,79 @@ def test_repeated_semicolons_produce_no_empty_segment():
     assert _sentences("啊；；好。") == ["啊；", "；", "好。"]
 
 
-def test_repeated_colons_produce_no_empty_segment():
-    assert _sentences("啊：：好。") == ["啊：", "：", "好。"]
+def test_punctuation_pile_up_produces_no_empty_segment():
+    """连续切点不产生空段。冒号必须后跟数字，所以两个冒号无法相邻成为切点，
+    这里用句号 + 冒号凑出相邻的两个切点。"""
+    assert _sentences("啊。：1好。") == ["啊。", "：", "1好。"]
 
 
 @pytest.mark.parametrize("text", ["", "   ", "\n\t ", "。", "；", "："])
 def test_degenerate_input(text):
     """纯空白与空字符串返回 []；只有标点时仍是一段（没有空段）。"""
-    pairs = split_sentences(text)
+    pairs = _cut(text)
     if text.strip():
         assert pairs == [(text, 0)]
     else:
         assert pairs == []
+
+
+# --- 按字数合并 -------------------------------------------------------
+
+def _seg(n, tail="。"):
+    """n 个字（含句末标点）的片段，内容无所谓，只有长度要紧。"""
+    return "啊" * (n - len(tail)) + tail
+
+
+def test_short_segments_merge_until_the_threshold():
+    """不到 50 字就把下一句并进来；一旦够了就封口。"""
+    assert merge_short_segments([_seg(20), _seg(20), _seg(20), _seg(40)]) == [
+        _seg(20) + _seg(20) + _seg(20),   # 20 -> 40 -> 60，到 60 才够 50
+        _seg(40),
+    ]
+
+
+def test_a_segment_at_the_threshold_is_not_extended():
+    """恰好 50 字即满足阈值，下一句另起一段（前提是它自己够长）。"""
+    assert merge_short_segments([_seg(50), _seg(40)]) == [_seg(50), _seg(40)]
+
+
+def test_a_long_segment_is_never_split_further():
+    """合并只会变长，不会把超长片段再切开。"""
+    long_seg = _seg(500)
+    assert merge_short_segments([long_seg]) == [long_seg]
+
+
+def test_short_tail_merges_back_into_the_previous_chunk():
+    """末段不足 30 字时并回前一段：它没有下一句能把自己撑起来。"""
+    assert merge_short_segments([_seg(60), _seg(20)]) == [_seg(60) + _seg(20)]
+
+
+def test_tail_at_the_tail_threshold_stays_on_its_own():
+    assert merge_short_segments([_seg(60), _seg(30)]) == [_seg(60), _seg(30)]
+
+
+def test_a_short_only_segment_is_kept_as_is():
+    """只有一段时无处可并，再短也原样返回。"""
+    assert merge_short_segments([_seg(5)]) == [_seg(5)]
+    assert _sentences(_seg(5)) == [_seg(5)]
+
+
+def test_merge_is_lossless():
+    """合并只改分段，不动字符：拼起来必须和原文逐字一致。"""
+    segments = [_seg(n) for n in (10, 5, 80, 20, 7)]
+    assert "".join(merge_short_segments(segments)) == "".join(segments)
+
+
+def test_pause_is_recomputed_after_merging():
+    """被合进来的标点不再对应静音，停顿按合并后的段尾算。"""
+    text = _seg(60, "；") + _seg(20)
+    assert split_sentences(text) == [(text, 0)]   # 末段太短并回来，分号的停顿消失
+
+
+def test_merge_thresholds_are_parameters_not_hardcoded():
+    assert split_sentences("啊。好。", min_chars=0, min_tail_chars=0) == [
+        ("啊。", SENTENCE_PAUSE_MS), ("好。", 0),
+    ]
 
 
 # --- ASCII '.' 的小数点例外 -------------------------------------------
