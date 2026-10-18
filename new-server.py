@@ -1,4 +1,4 @@
-"""IndexTTS FastAPI server with sentence-level splitting (port 3003).
+"""IndexTTS FastAPI server with sentence-level splitting (port 3002).
 
 A copy of server.py that splits the incoming text at sentence ends and
 semicolons, synthesizes each segment separately, and concatenates the pieces
@@ -62,7 +62,7 @@ from sentence_split import concat_segments, split_sentences
 
 parser = argparse.ArgumentParser(description="IndexTTS FastAPI Server")
 parser.add_argument("--host", type=str, default="0.0.0.0")
-parser.add_argument("--port", type=int, default=3003)
+parser.add_argument("--port", type=int, default=3002)
 parser.add_argument("--model_dir", type=str, default="./checkpoints")
 parser.add_argument("--version", type=str, default="2.5", choices=["2", "2.5"], help="Model version to use")
 parser.add_argument("--examples_dir", type=str, default="./wolf-audio")
