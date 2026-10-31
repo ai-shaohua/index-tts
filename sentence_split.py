@@ -28,18 +28,23 @@ SPLIT_PATTERN = re.compile(
 )
 
 # --- 停顿时长：调效果就改这两个常量，其余全部由它们推导 ---
-SENTENCE_PAUSE_MS = 300                       # 句末停顿
+SENTENCE_PAUSE_MS = 150                       # 句末停顿
 # 分号与冒号共用同一个停顿时长。
-SEMICOLON_PAUSE_MS = 250
+SEMICOLON_PAUSE_MS = 150
 
 SENTENCE_PUNCT = frozenset('.。!！?？')
 SEMICOLON_PUNCT = frozenset(';；:：')
 
 # --- 合并阈值：太短的片段单独合成音质差，所以先攒够字数再送 ---
+# 效果递减的顺序是：长度适中 > 稍长 > 过短。所以宁可让 chunk 偏长，也不留短段。
 # 当前 chunk 不足这么多字时，下一句并进来而不是另起一段。
-MIN_CHUNK_CHARS = 50
+MIN_CHUNK_CHARS = 40
 # 最后一个 chunk 不足这么多字时并回前一个，绝不单独成段。
 MIN_TAIL_CHUNK_CHARS = 30
+# 并进来之后超过这个长度就放弃合并，让下一句另起一段 —— 偏长比过短好，
+# 但也有限度。减 5 是为了把上界压在「并完刚好 80」之下。
+# 末段例外：它只能选「超长」或「孤零零一个短段」，按上面的顺序宁可超长。
+MAX_MERGED_CHARS = MIN_CHUNK_CHARS + MIN_TAIL_CHUNK_CHARS - 5
 
 
 def pause_after(segment: str) -> int:
@@ -64,14 +69,19 @@ def merge_short_segments(
     segments: list[str],
     min_chars: int = MIN_CHUNK_CHARS,
     min_tail_chars: int = MIN_TAIL_CHUNK_CHARS,
+    max_chars: int = MAX_MERGED_CHARS,
 ) -> list[str]:
     """把切出来的片段按字数攒成 chunk —— 短片段单独合成音质差。
 
     规则（顺序扫描，不回看）：
       1. 当前 chunk 不足 `min_chars` 字时，下一句并进来；够了才另起一段。
          所以一个 chunk 一旦超过阈值就封口，不会无限增长。
-      2. 扫完之后，最后一个 chunk 不足 `min_tail_chars` 字就并回前一个 ——
+      2. 但并进来之后若超过 `max_chars`，就放弃这次合并、让下一句另起一段。
+         宁可留一个偏短的 chunk，也不要一个过长的。
+      3. 扫完之后，最后一个 chunk 不足 `min_tail_chars` 字就并回前一个 ——
          它没有「下一句」可以把自己撑起来，单独成段只会得到那段糟糕的音频。
+         这一步不受 `max_chars` 限制：末段只能在「超长」和「过短」之间选，
+         而超长的效果明显好于过短。
 
     片段原样拼接（不插空格、不补标点）：片段末尾的标点已经在文本里，
     合进来之后模型会在那里自然换气，只是不再有拼进音频的静音。
@@ -81,7 +91,8 @@ def merge_short_segments(
 
     chunks = [segments[0]]
     for seg in segments[1:]:
-        if _chunk_len(chunks[-1]) < min_chars:
+        if (_chunk_len(chunks[-1]) < min_chars
+                and _chunk_len(chunks[-1] + seg) <= max_chars):
             chunks[-1] += seg
         else:
             chunks.append(seg)
@@ -99,11 +110,13 @@ def split_sentences(
     text: str,
     min_chars: int = MIN_CHUNK_CHARS,
     min_tail_chars: int = MIN_TAIL_CHUNK_CHARS,
+    max_chars: int = MAX_MERGED_CHARS,
 ) -> list[tuple[str, int]]:
     """原文 -> [(送去合成的原文片段, 该片段后面的停顿毫秒), ...]
 
     先按标点切，再按字数把太短的片段合并回去（见 `merge_short_segments`），
-    所以返回的段数通常少于标点数。两个阈值都传 0 就是「只切不合并」。
+    所以返回的段数通常少于标点数。`min_chars` 与 `min_tail_chars` 都传 0
+    就是「只切不合并」。
 
     最后一段的停顿恒为 0。片段按原顺序返回，标点保留在片段末尾
     （零宽后视切分不丢字符）。`strip()` 后为空的片段丢弃，所以
@@ -116,7 +129,7 @@ def split_sentences(
     if not segments:
         return []
 
-    chunks = merge_short_segments(segments, min_chars, min_tail_chars)
+    chunks = merge_short_segments(segments, min_chars, min_tail_chars, max_chars)
 
     # 停顿按合并后的段尾重算：被合进来的那些标点不再对应静音。
     pauses = [pause_after(chunk) for chunk in chunks]

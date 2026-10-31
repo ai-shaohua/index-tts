@@ -18,6 +18,7 @@ import numpy as np  # noqa: E402
 
 import sentence_split  # noqa: E402
 from sentence_split import (  # noqa: E402
+    MAX_MERGED_CHARS,
     SEMICOLON_PAUSE_MS,
     SENTENCE_PAUSE_MS,
     TAIL_FADE_MS,
@@ -201,8 +202,18 @@ def test_a_long_segment_is_never_split_further():
     assert merge_short_segments([long_seg]) == [long_seg]
 
 
-def test_short_tail_merges_back_into_the_previous_chunk():
-    """末段不足 30 字时并回前一段：它没有下一句能把自己撑起来。"""
+def test_merge_is_skipped_when_it_would_exceed_the_cap():
+    """并进来会超过 MAX_MERGED_CHARS 就不并 —— 偏长好过过短，但有限度。"""
+    assert MAX_MERGED_CHARS == 75
+    # 40 + 40 = 80 > 75，所以第二句另起一段（它自己够长，不会被末段规则并回来）。
+    assert merge_short_segments([_seg(40), _seg(40)]) == [_seg(40), _seg(40)]
+    # 40 + 35 = 75 正好不超，合并。
+    assert merge_short_segments([_seg(40), _seg(35)]) == [_seg(40) + _seg(35)]
+
+
+def test_the_cap_does_not_apply_to_the_short_tail():
+    """末段只能在「超长」和「过短」之间选，按效果顺序宁可超长。"""
+    # 60 + 20 = 80 超过上限，但 20 字的末段不足 30，仍然并回去。
     assert merge_short_segments([_seg(60), _seg(20)]) == [_seg(60) + _seg(20)]
 
 
